@@ -1,162 +1,118 @@
-# Tutorial by www.pylessons.com
-# Tutorial written for - Tensorflow 1.15, Keras 2.2.4
-
-import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-import random
+import numpy as np 
+import time
 import gym
-import numpy as np
-from collections import deque
-from keras.models import Model, load_model
-from keras.layers import Input, Dense
-from keras.optimizers import Adam, RMSprop
+import cv2
+import pickle
 
+from sklearn.preprocessing import KBinsDiscretizer
+import math, random
+from typing import Tuple
 
-import tensorflow as tf
+env = gym.make('CartPole-v1', render_mode='rgb_array')
 
-def OurModel(input_shape, action_space):
-    X_input = Input(input_shape)
+policy = lambda *obs: 1
 
-    # 'Dense' is the basic form of a neural network layer
-    # Input Layer of state size(4) and Hidden Layer with 512 nodes
-    X = Dense(512, input_shape=input_shape, activation="relu", kernel_initializer='he_uniform')(X_input)
+# Define video writer
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Use MP4 codec
+out = cv2.VideoWriter('cartpole_video.mp4', fourcc, 20.0, (600, 400))  # Adjust dimensions as per your environment
 
-    # Hidden layer with 256 nodes
-    X = Dense(256, activation="relu", kernel_initializer='he_uniform')(X)
+obs = env.reset()
+while True:
+    actions = policy(*obs)
+    obs, reward, done, info = env.step(actions)[:4] 
+    frame = env.render()
+    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)  # OpenCV uses BGR color format
+    out.write(frame)
+    cv2.imshow('CartPole', frame)
+    if cv2.waitKey(1) & 0xFF == ord('q') or done:
+        break
+
+out.release()
+cv2.destroyAllWindows()
+env.close()
+
+n_bins = ( 6 , 12 )
+lower_bounds = [ env.observation_space.low[2], -math.radians(60) ]
+upper_bounds = [ env.observation_space.high[2], math.radians(60) ]
+
+def discretizer( _ , __ , angle, pole_velocity ) -> Tuple[int,...]:
+    """Convert continues state intro a discrete state"""
+    est = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='uniform', subsample= None)
+    est.fit([lower_bounds, upper_bounds ])
+    return tuple(map(int,est.transform([[angle, pole_velocity]])[0]))
+
+Q_table = np.zeros(n_bins + (env.action_space.n,))
+Q_table.shape
+
+def policy( state : tuple ):
+    """Choosing action based on epsilon-greedy policy"""
+    return np.argmax(Q_table[state])
+
+def new_Q_value( reward : float ,  new_state : tuple , discount_factor=1 ) -> float:
+    """Temperal diffrence for updating Q-value of state-action pair"""
+    future_optimal_value = np.max(Q_table[new_state])
+    learned_value = reward + discount_factor * future_optimal_value
+    return learned_value
+
+def learning_rate(n : int , min_rate=0.01 ) -> float  :
+    """Decaying learning rate"""
+    return max(min_rate, min(1.0, 1.0 - math.log10((n + 1) / 25)))
+
+def exploration_rate(n : int, min_rate= 0.1 ) -> float :
+    """Decaying exploration rate"""
+    return max(min_rate, min(1, 1.0 - math.log10((n  + 1) / 25)))
+
+# Training
+
+n_episodes = 10000
+
+for e in range(n_episodes):
     
-    # Hidden layer with 64 nodes
-    X = Dense(64, activation="relu", kernel_initializer='he_uniform')(X)
-
-    # Output Layer with # of actions: 2 nodes (left, right)
-    X = Dense(action_space, activation="linear", kernel_initializer='he_uniform')(X)
-
-    model = Model(inputs = X_input, outputs = X, name='CartPole DQN model')
-    model.compile(loss=tf.compat.v1.losses.sparse_softmax_cross_entropy, optimizer=RMSprop(lr=0.00025, rho=0.95, epsilon=0.01), metrics=["accuracy"])
-
-    model.summary()
-    return model
-
-
-class DQNAgent:
-    def __init__(self):
-        self.env = gym.make('CartPole-v1')
-        # by default, CartPole-v1 has max episode steps = 500
-        self.state_size = self.env.observation_space.shape[0]
-        self.action_size = self.env.action_space.n
-        self.EPISODES = 1000
-        self.memory = deque(maxlen=2000)
+    # Discretize state into buckets
+    current_state, done = discretizer(*env.reset(), 0, 0), False
+    
+    while not done:
         
-        self.gamma = 0.95    # discount rate
-        self.epsilon = 1.0  # exploration rate
-        self.epsilon_min = 0.001
-        self.epsilon_decay = 0.999
-        self.batch_size = 64
-        self.train_start = 1000
+        # Policy action 
+        action = policy(current_state) # exploit
+        
+        # Insert random action
+        if np.random.random() < exploration_rate(e): 
+            action = env.action_space.sample() # explore 
+         
+        # Increment environment
+        obs, reward, done, _ = env.step(action)[:4]
+        new_state = discretizer(*obs)
+        
+        # Update Q-Table
+        lr = learning_rate(e)
+        learnt_value = new_Q_value(reward, new_state)
+        old_value = Q_table[current_state][action]
+        Q_table[current_state][action] = (1 - lr) * old_value + lr * learnt_value
+        
+        current_state = new_state
+        
+        # Render the cartpole environment
+        frame = env.render()
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)  # Convert to BGR format for compatibility with cv2
+        cv2.imshow('CartPole', frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):  # Close the window if 'q' is pressed
+            break
+        time.sleep(0.02)  # Adjust the sleep time as needed for smoother rendering
+    
+    if cv2.waitKey(1) & 0xFF == ord('q'):  # Close the window if 'q' is pressed
+        break
 
-        # create main model
-        self.model = OurModel(input_shape=(self.state_size,), action_space = self.action_size)
+cv2.destroyAllWindows()
+env.close()
+ 
+# QTable  
+print("Q-Table after training:")
+print(Q_table)
 
-    def remember(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
-        if len(self.memory) > self.train_start:
-            if self.epsilon > self.epsilon_min:
-                self.epsilon *= self.epsilon_decay
-
-    def act(self, state):
-        if np.random.random() <= self.epsilon:
-            return random.randrange(self.action_size)
-        else:
-            return np.argmax(self.model.predict(state))
-
-    def replay(self):
-        if len(self.memory) < self.train_start:
-            return
-        # Randomly sample minibatch from the memory
-        minibatch = random.sample(self.memory, min(len(self.memory), self.batch_size))
-
-        state = np.zeros((self.batch_size, self.state_size))
-        next_state = np.zeros((self.batch_size, self.state_size))
-        action, reward, done = [], [], []
-
-        # do this before prediction
-        # for speedup, this could be done on the tensor level
-        # but easier to understand using a loop
-        for i in range(self.batch_size):
-            state[i] = minibatch[i][0]
-            action.append(minibatch[i][1])
-            reward.append(minibatch[i][2])
-            next_state[i] = minibatch[i][3]
-            done.append(minibatch[i][4])
-
-        # do batch prediction to save speed
-        target = self.model.predict(state)
-        target_next = self.model.predict(next_state)
-
-        for i in range(self.batch_size):
-            # correction on the Q value for the action used
-            if done[i]:
-                target[i][action[i]] = reward[i]
-            else:
-                # Standard - DQN
-                # DQN chooses the max Q value among next actions
-                # selection and evaluation of action is on the target Q Network
-                # Q_max = max_a' Q_target(s', a')
-                target[i][action[i]] = reward[i] + self.gamma * (np.amax(target_next[i]))
-
-        # Train the Neural Network with batches
-        self.model.fit(state, target, batch_size=self.batch_size, verbose=0)
+# Save Q-table to file after training
+with open('Q_table.pkl', 'wb') as f:
+    pickle.dump(Q_table, f)
+print("Q-table saved successfully.")
 
 
-    def load(self, name):
-        self.model = load_model(name)
-
-    def save(self, name):
-        self.model.save(name)
-            
-    def run(self):
-        for e in range(self.EPISODES):
-            state = self.env.reset()
-            state = np.reshape(state, [1, self.state_size])
-            done = False
-            i = 0
-            while not done:
-                self.env.render()
-                action = self.act(state)
-                next_state, reward, done, _ = self.env.step(action)
-                next_state = np.reshape(next_state, [1, self.state_size])
-                if not done or i == self.env._max_episode_steps-1:
-                    reward = reward
-                else:
-                    reward = -100
-                self.remember(state, action, reward, next_state, done)
-                state = next_state
-                i += 1
-                if done:                   
-                    print("episode: {}/{}, score: {}, e: {:.2}".format(e, self.EPISODES, i, self.epsilon))
-                    if i == 500:
-                        print("Saving trained model as cartpole-dqn.h5")
-                        self.save("cartpole-dqn.h5")
-                        return
-                self.replay()
-
-    def test(self):
-        self.load("cartpole-dqn.h5")
-        for e in range(self.EPISODES):
-            state = self.env.reset()
-            state = np.reshape(state, [1, self.state_size])
-            done = False
-            i = 0
-            while not done:
-                self.env.render()
-                action = np.argmax(self.model.predict(state))
-                next_state, reward, done, _ = self.env.step(action)
-                state = np.reshape(next_state, [1, self.state_size])
-                i += 1
-                if done:
-                    print("episode: {}/{}, score: {}".format(e, self.EPISODES, i))
-                    break
-
-if __name__ == "__main__":
-    agent = DQNAgent()
-    agent.run()
-    #agent.test()
