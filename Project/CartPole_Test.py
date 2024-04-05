@@ -27,6 +27,10 @@ n_bins = (6, 12)  # Number of bins for discretization
 lower_bounds = [env.observation_space.low[2], -math.radians(60)]  # Lower bounds for angle and pole velocity
 upper_bounds = [env.observation_space.high[2], math.radians(60)]  # Upper bounds for angle and pole velocity
 
+# Define evaluation metrics
+total_rewards = []
+episode_durations = []
+
 def discretizer(_, __, angle, pole_velocity) -> Tuple[int, ...]:
     """Convert continuous state into a discrete state"""
     est = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='uniform', subsample=None)  # Initialize discretizer
@@ -39,12 +43,14 @@ def policy(state: tuple):
 
 for e in range(n_testing_episodes):  # Iterate over testing episodes
     current_state, done = discretizer(*env.reset(), 0, 0), False  # Reset the environment and discretize the initial state
+    episode_reward = 0
     start_time = time.time()  # Record the start time of the episode
     while not done:  # Main loop for the episode
         action = policy(current_state)  # Choose action based on the current state
         obs, reward, done, _ = env.step(action)[:4]  # Take a step in the environment
         new_state = discretizer(*obs)  # Discretize the new state
         current_state = new_state  # Update the current state for the next iteration
+        episode_reward += reward  # Accumulate episode reward
 
         frame = env.render()  # Render the environment
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)  # Convert color format for compatibility
@@ -54,10 +60,18 @@ for e in range(n_testing_episodes):  # Iterate over testing episodes
     
     end_time = time.time()  # Record the end time of the episode
     episode_duration = end_time - start_time  # Calculate the duration of the episode
-    print(f"Episode {e + 1} duration: {episode_duration:.2f} seconds")  # Print episode duration
+    print(f"Episode {e + 1} duration: {episode_duration:.2f} seconds, Total Reward: {episode_reward}")  # Print episode duration and total reward
+
+    total_rewards.append(episode_reward)
+    episode_durations.append(episode_duration)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):  # Check for 'q' key press to exit
         break
 
+# Print average total reward and average episode duration
+print(f"Average Total Reward: {np.mean(total_rewards)}")
+print(f"Average Episode Duration: {np.mean(episode_durations)}")
+
 cv2.destroyAllWindows()  # Close OpenCV windows
 env.close()  # Close the environment
+
